@@ -1,7 +1,9 @@
 package com.template.flows;
 
 import co.paralleluniverse.fibers.Suspendable;
+import com.template.contracts.CarContract;
 import com.template.contracts.TemplateContract;
+import com.template.states.CarState;
 import com.template.states.TemplateState;
 import net.corda.core.flows.*;
 import net.corda.core.identity.Party;
@@ -12,6 +14,8 @@ import net.corda.core.utilities.ProgressTracker;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
+
+import static com.template.contracts.CarContract.CAR_CONTRACT_ID;
 
 // ******************
 // * Initiator flow *
@@ -28,49 +32,37 @@ public class ShipmentFlow extends FlowLogic<SignedTransaction> {
     }
 
     //private variables
-    private Party sender ;
-    private Party receiver;
+    private String model;
+    private Party owner ;
 
     //public constructor
-    public ShipmentFlow(Party sendTo){
-        this.receiver = sendTo;
+    public ShipmentFlow(String model, Party owner){
+        this.model = model;
+        this.owner = owner;
     }
 
     @Suspendable
     @Override
     public SignedTransaction call() throws FlowException {
-        //Hello World message
-        String msg = "Hello-World";
-        this.sender = getOurIdentity();
 
-        // Step 1. Get a reference to the notary service on our network and our key pair.
-        // Note: ongoing work to support multiple notary identities is still in progress.
-        final Party notary = getServiceHub().getNetworkMapCache().getNotaryIdentities().get(0);
+        // Retrieve the notary identity from the network map
+        Party notary = getServiceHub().getNetworkMapCache().getNotaryIdentities().get(0);
 
-        //Compose the State that carries the Hello World message
-        final TemplateState output = new TemplateState(msg,sender,receiver);
+        // Create the transaction arguments (inputs/outputs)
+        CarState outputState = new CarState(model, owner, getOurIdentity());
 
-        // Step 3. Create a new TransactionBuilder object.
-        final TransactionBuilder builder = new TransactionBuilder(notary);
+        // Create the transaction builder an add components
+        TransactionBuilder txBuilder = new TransactionBuilder(notary)
+                .addOutputState(outputState, CAR_CONTRACT_ID)
+                .addCommand(new CarContract.Commands.Shipment(), getOurIdentity().getOwningKey());
 
-        // Step 4. Add the iou as an output state, as well as a command to the transaction builder.
-        builder.addOutputState(output);
-        builder.addCommand(new TemplateContract.Commands.Send(), Arrays.asList(this.sender.getOwningKey(),this.receiver.getOwningKey()) );
+        // Signing the transaction
+        SignedTransaction shipmentTx = getServiceHub().signInitialTransaction(txBuilder);
 
+        // Create session with counterparty
+        FlowSession otherPartySession = initiateFlow(owner);
 
-        // Step 5. Verify and sign it with our KeyPair.
-        builder.verify(getServiceHub());
-        final SignedTransaction ptx = getServiceHub().signInitialTransaction(builder);
-
-
-        // Step 6. Collect the other party's signature using the SignTransactionFlow.
-        List<Party> otherParties = output.getParticipants().stream().map(el -> (Party)el).collect(Collectors.toList());
-        otherParties.remove(getOurIdentity());
-        List<FlowSession> sessions = otherParties.stream().map(el -> initiateFlow(el)).collect(Collectors.toList());
-
-        SignedTransaction stx = subFlow(new CollectSignaturesFlow(ptx, sessions));
-
-        // Step 7. Assuming no exceptions, we can now finalise the transaction
-        return subFlow(new FinalityFlow(stx, sessions));
+        // Finalizing the transaction
+        return subFlow(new FinalityFlow(shipmentTx, otherPartySession));
     }
 }
